@@ -12,9 +12,12 @@ extern "C" {
 
 // 魔数定义
 #define MAGIC_NUMBER 0xDEADBEEF
-#define DEFAULT_ALIGNMENT 8
-#define MAX_SIZE_CLASSES 16
-#define MIN_BLOCK_SIZE 32
+// 内存对齐优化
+#define DEFAULT_ALIGNMENT 64    // CPU缓存行大小
+// 最小块大小
+#define MIN_BLOCK_SIZE 32      // 减少碎片
+// 最大固定大小类别
+#define MAX_SIZE_CLASSES 16    // 支持的固定大小数量
 #define PAGE_SIZE 4096
 
 // 内存块头部结构
