@@ -1,7 +1,12 @@
 # LibMemPool 简化Makefile
 
 CC = gcc
-CFLAGS = -std=c99 -Wall -Wextra -O2 -g -fPIC
+# DEBUG=1 启用调试宏与更易调试的编译参数
+ifeq ($(DEBUG),1)
+	CFLAGS = -std=c99 -Wall -Wextra -O0 -g3 -fPIC -DMEMPOOL_DEBUG=1
+else
+	CFLAGS = -std=c99 -Wall -Wextra -O2 -g -fPIC
+endif
 LDFLAGS = -pthread
 INCLUDES = -Iinclude
 

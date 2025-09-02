@@ -5,6 +5,25 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <pthread.h>
+// 调试开关：编译时传入 -DMEMPOOL_DEBUG=1 启用
+#if defined(MEMPOOL_DEBUG) && (MEMPOOL_DEBUG)
+    #include <stdio.h>
+    #include <stdlib.h>
+    #define MP_DEBUG 1
+    #define MP_LOG(fmt, ...) do { \
+            fprintf(stderr, "[mempool] %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+        } while (0)
+    #define MP_ASSERT(cond, msg) do { \
+            if (!(cond)) { \
+                fprintf(stderr, "[mempool][ASSERT] %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
+                abort(); \
+            } \
+        } while (0)
+#else
+    #define MP_DEBUG 0
+    #define MP_LOG(...) do { } while (0)
+    #define MP_ASSERT(cond, msg) do { } while (0)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,30 +64,13 @@ typedef struct memory_pool {
     pthread_mutex_t mutex;         // 互斥锁
     bool thread_safe;              // 是否线程安全
     uint32_t alignment;            // 内存对齐字节数
-    
-    // 性能统计
-    uint64_t alloc_count;          // 分配次数
-    uint64_t free_count;           // 释放次数
-    uint64_t merge_count;          // 合并次数
+    struct memory_pool* next;      // 下一个内存池（链式扩展）
     
     // 固定大小池
     size_class_pool_t size_classes[MAX_SIZE_CLASSES];
     size_t class_sizes[MAX_SIZE_CLASSES];
     int num_classes;
 } memory_pool_t;
-
-// 内存池统计信息
-typedef struct pool_stats {
-    size_t total_size;             // 总大小
-    size_t used_size;              // 已使用大小
-    size_t free_size;              // 空闲大小
-    size_t largest_free_block;     // 最大空闲块
-    size_t fragmentation_ratio;    // 碎片率(百分比)
-    uint64_t allocation_count;     // 分配次数
-    uint64_t free_count;           // 释放次数
-    uint64_t merge_count;          // 合并次数
-    size_t free_block_count;       // 空闲块数量
-} pool_stats_t;
 
 // 内存池配置
 typedef struct pool_config {
@@ -101,9 +103,7 @@ size_t memory_pool_get_block_size(memory_pool_t* pool, void* ptr);
 void memory_pool_warmup(memory_pool_t* pool);
 void memory_pool_defragment(memory_pool_t* pool);
 
-// 统计和调试
-void memory_pool_get_stats(memory_pool_t* pool, pool_stats_t* stats);
-void memory_pool_print_stats(memory_pool_t* pool);
+// 调试
 bool memory_pool_validate(memory_pool_t* pool);
 
 // 固定大小池操作
