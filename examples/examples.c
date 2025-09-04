@@ -89,6 +89,50 @@ static void test_fixed_classes(void) {
     printf("[fixed] 通过\n");
 }
 
+static void test_fixed_edges(void) {
+    printf("[fixed-edges] 开始\n");
+    memory_pool_t* pool = memory_pool_create(MB(4), true);
+    assert(pool);
+
+    // 添加一个128字节的固定大小类别，容量10
+    int c128 = memory_pool_add_size_class(pool, 128, 10);
+    assert(c128 >= 0);
+
+    // 精准与更小尺寸都应走此类别
+    void* slots[12] = {0};
+    for (int i = 0; i < 10; ++i) {
+        // 交替用 <=128 的尺寸，确保都走固定类别
+        size_t req = (i % 2 == 0) ? 128 : 64;
+        slots[i] = memory_pool_alloc_fixed(pool, req);
+        assert(slots[i] != NULL);
+        memset(slots[i], 0xAB, req);
+        assert(memory_pool_contains(pool, slots[i]));
+    }
+
+    // 再申请两个，会耗尽固定池后回退到通用分配
+    slots[10] = memory_pool_alloc_fixed(pool, 128);
+    slots[11] = memory_pool_alloc_fixed(pool, 64);
+    assert(slots[10] && slots[11]);
+
+    // 释放10个固定池块
+    for (int i = 0; i < 10; ++i) memory_pool_free_fixed(pool, slots[i]);
+
+    // 将非固定类别块用 free_fixed 释放，应回退到普通 free
+    memory_pool_free_fixed(pool, slots[10]);
+    memory_pool_free_fixed(pool, slots[11]);
+
+    // 再做一轮分配/释放，确认循环稳定
+    for (int i = 0; i < 10; ++i) {
+        slots[i] = memory_pool_alloc_fixed(pool, 100);
+        assert(slots[i]);
+    }
+    for (int i = 0; i < 10; ++i) memory_pool_free_fixed(pool, slots[i]);
+
+    assert(memory_pool_validate(pool));
+    memory_pool_destroy(pool);
+    printf("[fixed-edges] 通过\n");
+}
+
 static void test_fragmentation_defrag(void) {
     printf("[frag] 开始\n");
     memory_pool_t* pool = memory_pool_create(MB(2), true);
@@ -211,6 +255,7 @@ int main(void) {
     printf("========================\n");
     test_basic();
     test_fixed_classes();
+    test_fixed_edges();
     test_fragmentation_defrag();
     test_chain_growth();
     test_multithread();
