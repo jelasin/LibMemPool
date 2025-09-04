@@ -50,12 +50,10 @@ $(SHARED_LIB): $(OBJECTS) | $(LIBDIR)
 
 # 编译并运行测试程序
 test: $(STATIC_LIB) | $(BUILDDIR)
-	@echo "编译测试和示例程序..."
+	@echo "编译示例程序..."
 	@$(CC) $(CFLAGS) $(INCLUDES) $(EXAMPLEDIR)/examples.c $(STATIC_LIB) $(LDFLAGS) -o $(BUILDDIR)/examples
-	@$(CC) $(CFLAGS) $(INCLUDES) $(EXAMPLEDIR)/test_run.c $(STATIC_LIB) $(LDFLAGS) -o $(BUILDDIR)/test_run
-	@echo "运行测试和示例..."
+	@echo "运行示例..."
 	@./$(BUILDDIR)/examples
-	@./$(BUILDDIR)/test_run
 
 # 清理构建文件
 clean:

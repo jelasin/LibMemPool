@@ -109,16 +109,40 @@ static void rb_remove(memory_pool_t* pool, memory_block_t* z) {
                 if (w && w->rb_color == 0) { w->rb_color = 1; x_parent->rb_color = 0; rb_left_rotate(pool, x_parent); w = x_parent->rb_right; }
                 if ((!w->rb_left || w->rb_left->rb_color == 1) && (!w->rb_right || w->rb_right->rb_color == 1)) { if (w) w->rb_color = 0; x = x_parent; x_parent = x_parent->rb_parent; }
                 else {
-                    if (!w->rb_right || w->rb_right->rb_color == 1) { if (w->rb_left) w->rb_left->rb_color = 1; w->rb_color = 0; rb_right_rotate(pool, w); w = x_parent->rb_right; }
-                    if (w) w->rb_color = x_parent->rb_color; x_parent->rb_color = 1; if (w && w->rb_right) w->rb_right->rb_color = 1; rb_left_rotate(pool, x_parent); x = pool->rb_root; break; }
+                    if (!w->rb_right || w->rb_right->rb_color == 1) {
+                        if (w->rb_left) w->rb_left->rb_color = 1;
+                        w->rb_color = 0;
+                        rb_right_rotate(pool, w);
+                        w = x_parent->rb_right;
+                    }
+                    if (w) {
+                        w->rb_color = x_parent->rb_color;
+                    }
+                    x_parent->rb_color = 1;
+                    if (w && w->rb_right) w->rb_right->rb_color = 1;
+                    rb_left_rotate(pool, x_parent);
+                    x = pool->rb_root;
+                    break; }
             } else if (x_parent) {
                 memory_block_t* w = x_parent->rb_left;
                 if (!w) { x = x_parent; x_parent = x_parent->rb_parent; continue; }
                 if (w && w->rb_color == 0) { w->rb_color = 1; x_parent->rb_color = 0; rb_right_rotate(pool, x_parent); w = x_parent->rb_left; }
                 if ((!w->rb_left || w->rb_left->rb_color == 1) && (!w->rb_right || w->rb_right->rb_color == 1)) { if (w) w->rb_color = 0; x = x_parent; x_parent = x_parent->rb_parent; }
                 else {
-                    if (!w->rb_left || w->rb_left->rb_color == 1) { if (w->rb_right) w->rb_right->rb_color = 1; w->rb_color = 0; rb_left_rotate(pool, w); w = x_parent->rb_left; }
-                    if (w) w->rb_color = x_parent->rb_color; x_parent->rb_color = 1; if (w && w->rb_left) w->rb_left->rb_color = 1; rb_right_rotate(pool, x_parent); x = pool->rb_root; break; }
+                    if (!w->rb_left || w->rb_left->rb_color == 1) {
+                        if (w->rb_right) w->rb_right->rb_color = 1;
+                        w->rb_color = 0;
+                        rb_left_rotate(pool, w);
+                        w = x_parent->rb_left;
+                    }
+                    if (w) {
+                        w->rb_color = x_parent->rb_color;
+                    }
+                    x_parent->rb_color = 1;
+                    if (w && w->rb_left) w->rb_left->rb_color = 1;
+                    rb_right_rotate(pool, x_parent);
+                    x = pool->rb_root;
+                    break; }
             } else break;
         }
         if (x) x->rb_color = 1;
