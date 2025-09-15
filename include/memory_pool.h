@@ -29,36 +29,56 @@
 extern "C" {
 #endif
 
-// 魔数定义
-#define MAGIC_NUMBER 0xDEADBEEF
+// 魔数策略：之前使用固定常量 0xDEADBEEF，容易被覆盖后伪造。
+// 现在改为：每个内存池启动时生成 32-bit 随机种子 magic_seed，
+// 块头 magic 字段 = magic_seed ^ (uint32_t)(uintptr_t)block 指针低位（地址扰动），
+// 从而不同池/运行实例的魔数不同，降低简单破坏未被检测的概率。
+// 仍保留旧名字接口语义，提供生成 / 校验宏。
+#define MP_ENABLE_DYNAMIC_MAGIC 1
+
+// 生成块魔数：传入 pool 与 block 指针
+#define MP_MAKE_BLOCK_MAGIC(pool, blk_ptr) ((uint32_t)((pool)->magic_seed) ^ (uint32_t)(uintptr_t)(blk_ptr))
+
+// 校验块魔数
+#define MP_CHECK_BLOCK_MAGIC(pool, blk_ptr) ((blk_ptr)->magic == MP_MAKE_BLOCK_MAGIC((pool), (blk_ptr)))
 // 内存对齐优化
 #define DEFAULT_ALIGNMENT 64    // CPU缓存行大小
-// 最小块大小
-#define MIN_BLOCK_SIZE 32      // 减少碎片
+// 最小块大小：必须 >= 头部尺寸并且考虑对齐。这里给出一个保守值，稍后在源码中可通过静态断言校验。
+// 由于 header 目前包含 3 指针(size_t/ptr) + 2 uint32_t + 3 指针，大多数 64 位平台上 memory_block_t 会 >= 48~64 字节。
+// 设定为 64，以避免过小块无法再拆分以及保证合并逻辑安全。
+#define MIN_BLOCK_SIZE 64      // 至少容纳一个完整块头，减少碎片
 // 最大固定大小类别
 #define MAX_SIZE_CLASSES 16    // 支持的固定大小数量
 #define PAGE_SIZE 4096
 
-// 标志位
-#define MB_FLAG_PREV_FREE  0x1    // 前一个物理块是空闲块（通用块）
-#define MB_FLAG_FREE       0x2    // 当前块处于通用空闲列表
-#define MB_FLAG_SIZECLASS  0x4    // 属于固定大小类别管理（不参与通用合并）
+// 标志位（低位聚合）：
+#define MB_FLAG_PREV_FREE   0x1    // 前一个物理块是空闲块（通用块）
+#define MB_FLAG_FREE        0x2    // 当前块处于通用空闲列表
+#define MB_FLAG_SIZECLASS   0x4    // 属于固定大小类别管理（不参与通用合并）
+#define MB_FLAG_RB_BLACK    0x8    // 红黑树颜色位：1=黑，0=红（仅在空闲块挂入 RB 树时使用）
+
+// RB 颜色操作宏
+#define RB_SET_RED(b)       ((b)->flags &= ~MB_FLAG_RB_BLACK)
+#define RB_SET_BLACK(b)     ((b)->flags |= MB_FLAG_RB_BLACK)
+#define RB_IS_RED(b)        (((b)->flags & MB_FLAG_RB_BLACK) == 0)
+#define RB_IS_BLACK(b)      (!RB_IS_RED(b))
 
 // 内存块头部结构（紧凑 + 复用）：
 // 空闲块: union.next 用作空闲链指针；已分配块: union.prev_size 记录前一物理块大小(用于 O(1) 反向合并)
 typedef struct memory_block {
+    // 头部前导字段：按写越界方向（通常是上一块用户区向高地址溢出）优先碰撞 magic/flags，实现类似前向 canary 早期检测。
+    uint32_t magic;                // 动态魔数 (pool->magic_seed ^ addr) —— 放在最前面，上一块溢出最先破坏
+    uint32_t flags;                // 标志位 (包含 FREE / PREV_FREE / SIZECLASS)
+    // 复用区 union 放在 size 之前可以让 size 与 prev_size/next 的覆盖更难一次性伪造
     union {
         struct memory_block* next; // 空闲链表指针（仅当 MB_FLAG_FREE=1 时有效）
-        uint32_t prev_size;        // 前一个物理块大小（仅当 MB_FLAG_FREE=0 且 MB_FLAG_PREV_FREE=1 时有效）
+        size_t prev_size;          // 前一个物理块大小（仅当 MB_FLAG_FREE=0 且 MB_FLAG_PREV_FREE=1 时有效），使用 size_t 避免 >4GB 截断
     } u;
-    size_t size;                   // 当前块大小（含头部，已按 alignment 对齐）
-    uint32_t flags;                // 标志位（替换原 padding）
-    uint32_t magic;                // 魔数，用于检测内存损坏（可在 RELEASE 构建裁剪）
-    // 红黑树指针（仅在通用空闲树中使用，减少额外结构体分配）
+    size_t   size;                 // 当前块大小（含头部，已按 alignment 对齐）
+    // 红黑树指针（仅在通用空闲树中使用）
     struct memory_block* rb_left;
     struct memory_block* rb_right;
     struct memory_block* rb_parent;
-    unsigned char rb_color; // 0=红,1=黑
 } memory_block_t;
 
 // 固定大小类别池（用于固定大小分配优化）
@@ -80,6 +100,7 @@ typedef struct memory_pool {
     uint32_t alignment;            // 内存对齐字节数
     struct memory_pool* next;      // 下一个内存池（链式扩展）
     struct memory_pool* master;    // 主池（全局红黑树所在）
+    uint32_t magic_seed;           // 动态魔数种子
     
     // 固定大小池
     size_class_pool_t size_classes[MAX_SIZE_CLASSES]; // bins

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <assert.h>
+#include <time.h>
 
 // 线程局部错误码
 static __thread pool_error_t g_last_error = POOL_OK;
@@ -21,7 +22,7 @@ static memory_block_t* find_best_fit_chain(memory_pool_t* root, memory_pool_t** 
 static void rb_insert(memory_pool_t* pool, memory_block_t* node);
 static void rb_remove(memory_pool_t* pool, memory_block_t* node);
 static memory_block_t* rb_find_best_fit(memory_pool_t* pool, size_t size, memory_pool_t** owner_pool);
-static void rb_init_node(memory_block_t* n) { n->rb_left = n->rb_right = n->rb_parent = NULL; n->rb_color = 0; }
+static void rb_init_node(memory_block_t* n) { n->rb_left = n->rb_right = n->rb_parent = NULL; RB_SET_RED(n); }
 
 // 旋转与修复
 static void rb_left_rotate(memory_pool_t* pool, memory_block_t* x) {
@@ -61,27 +62,27 @@ static void rb_insert(memory_pool_t* pool, memory_block_t* z) {
     if (!y) pool->rb_root = z;
     else if (rb_cmp(z, y) < 0) y->rb_left = z; else y->rb_right = z;
     // fixup
-    z->rb_color = 0; // red
-    while (z != pool->rb_root && z->rb_parent->rb_color == 0) {
+    RB_SET_RED(z); // red
+    while (z != pool->rb_root && RB_IS_RED(z->rb_parent)) {
         memory_block_t* p = z->rb_parent; memory_block_t* g = p->rb_parent;
         if (!g) break;
         if (p == g->rb_left) {
             memory_block_t* u = g->rb_right;
-            if (u && u->rb_color == 0) { p->rb_color = 1; u->rb_color = 1; g->rb_color = 0; z = g; }
+            if (u && RB_IS_RED(u)) { RB_SET_BLACK(p); RB_SET_BLACK(u); RB_SET_RED(g); z = g; }
             else {
                 if (z == p->rb_right) { z = p; rb_left_rotate(pool, z); p = z->rb_parent; g = p? p->rb_parent:NULL; }
-                p->rb_color = 1; if (g) { g->rb_color = 0; rb_right_rotate(pool, g); }
+                RB_SET_BLACK(p); if (g) { RB_SET_RED(g); rb_right_rotate(pool, g); }
             }
         } else {
             memory_block_t* u = g->rb_left;
-            if (u && u->rb_color == 0) { p->rb_color = 1; u->rb_color = 1; g->rb_color = 0; z = g; }
+            if (u && RB_IS_RED(u)) { RB_SET_BLACK(p); RB_SET_BLACK(u); RB_SET_RED(g); z = g; }
             else {
                 if (z == p->rb_left) { z = p; rb_right_rotate(pool, z); p = z->rb_parent; g = p? p->rb_parent:NULL; }
-                p->rb_color = 1; if (g) { g->rb_color = 0; rb_left_rotate(pool, g); }
+                RB_SET_BLACK(p); if (g) { RB_SET_RED(g); rb_left_rotate(pool, g); }
             }
         }
     }
-    pool->rb_root->rb_color = 1; // root black
+    RB_SET_BLACK(pool->rb_root); // root black
 }
 static memory_block_t* rb_min(memory_block_t* n) { while (n && n->rb_left) n = n->rb_left; return n; }
 static void rb_transplant(memory_pool_t* pool, memory_block_t* u, memory_block_t* v) {
@@ -94,58 +95,54 @@ static void rb_remove(memory_pool_t* pool, memory_block_t* z) {
     // 简单存在性检查：自 root 向下按比较寻找 z
     memory_block_t* probe = pool->rb_root; bool found=false; while (probe) { int c=rb_cmp(z, probe); if (c==0) { if (probe==z) found=true; break; } probe = (c<0)?probe->rb_left:probe->rb_right; }
     if (!found) { MP_LOG("rb_remove skip: node %p not in tree", (void*)z); return; }
-    memory_block_t* y = z; unsigned char y_original = y->rb_color; memory_block_t* x = NULL; memory_block_t* x_parent = NULL;
+    memory_block_t* y = z; unsigned char y_original_black = RB_IS_BLACK(y); memory_block_t* x = NULL; memory_block_t* x_parent = NULL;
     if (!z->rb_left) { x = z->rb_right; rb_transplant(pool, z, z->rb_right); x_parent = z->rb_parent; }
     else if (!z->rb_right) { x = z->rb_left; rb_transplant(pool, z, z->rb_left); x_parent = z->rb_parent; }
     else {
-        y = rb_min(z->rb_right); y_original = y->rb_color; x = y->rb_right; if (y->rb_parent == z) { if (x) x->rb_parent = y; x_parent = y; } else { rb_transplant(pool, y, y->rb_right); y->rb_right = z->rb_right; y->rb_right->rb_parent = y; x_parent = y->rb_parent; }
-        rb_transplant(pool, z, y); y->rb_left = z->rb_left; y->rb_left->rb_parent = y; y->rb_color = z->rb_color;
+    y = rb_min(z->rb_right); y_original_black = RB_IS_BLACK(y); x = y->rb_right; if (y->rb_parent == z) { if (x) x->rb_parent = y; x_parent = y; } else { rb_transplant(pool, y, y->rb_right); y->rb_right = z->rb_right; y->rb_right->rb_parent = y; x_parent = y->rb_parent; }
+    rb_transplant(pool, z, y); y->rb_left = z->rb_left; y->rb_left->rb_parent = y; if (RB_IS_RED(z)) RB_SET_RED(y); else RB_SET_BLACK(y);
     }
-    if (y_original == 1) { // fix double-black
-        while ((x != pool->rb_root) && (!x || x->rb_color == 1)) {
+    if (y_original_black) { // fix double-black
+        while ((x != pool->rb_root) && (!x || RB_IS_BLACK(x))) {
             if (x_parent && x == x_parent->rb_left) {
                 memory_block_t* w = x_parent->rb_right;
                 if (!w) { x = x_parent; x_parent = x_parent->rb_parent; continue; }
-                if (w && w->rb_color == 0) { w->rb_color = 1; x_parent->rb_color = 0; rb_left_rotate(pool, x_parent); w = x_parent->rb_right; }
-                if ((!w->rb_left || w->rb_left->rb_color == 1) && (!w->rb_right || w->rb_right->rb_color == 1)) { if (w) w->rb_color = 0; x = x_parent; x_parent = x_parent->rb_parent; }
+                if (w && RB_IS_RED(w)) { RB_SET_BLACK(w); RB_SET_RED(x_parent); rb_left_rotate(pool, x_parent); w = x_parent->rb_right; }
+                if ((!w->rb_left || RB_IS_BLACK(w->rb_left)) && (!w->rb_right || RB_IS_BLACK(w->rb_right))) { if (w) RB_SET_RED(w); x = x_parent; x_parent = x_parent->rb_parent; }
                 else {
-                    if (!w->rb_right || w->rb_right->rb_color == 1) {
-                        if (w->rb_left) w->rb_left->rb_color = 1;
-                        w->rb_color = 0;
+                    if (!w->rb_right || RB_IS_BLACK(w->rb_right)) {
+                        if (w->rb_left) RB_SET_BLACK(w->rb_left);
+                        RB_SET_RED(w);
                         rb_right_rotate(pool, w);
                         w = x_parent->rb_right;
                     }
-                    if (w) {
-                        w->rb_color = x_parent->rb_color;
-                    }
-                    x_parent->rb_color = 1;
-                    if (w && w->rb_right) w->rb_right->rb_color = 1;
+                    if (w) { if (RB_IS_RED(x_parent)) RB_SET_RED(w); else RB_SET_BLACK(w); }
+                    RB_SET_BLACK(x_parent);
+                    if (w && w->rb_right) RB_SET_BLACK(w->rb_right);
                     rb_left_rotate(pool, x_parent);
                     x = pool->rb_root;
                     break; }
             } else if (x_parent) {
                 memory_block_t* w = x_parent->rb_left;
                 if (!w) { x = x_parent; x_parent = x_parent->rb_parent; continue; }
-                if (w && w->rb_color == 0) { w->rb_color = 1; x_parent->rb_color = 0; rb_right_rotate(pool, x_parent); w = x_parent->rb_left; }
-                if ((!w->rb_left || w->rb_left->rb_color == 1) && (!w->rb_right || w->rb_right->rb_color == 1)) { if (w) w->rb_color = 0; x = x_parent; x_parent = x_parent->rb_parent; }
+                if (w && RB_IS_RED(w)) { RB_SET_BLACK(w); RB_SET_RED(x_parent); rb_right_rotate(pool, x_parent); w = x_parent->rb_left; }
+                if ((!w->rb_left || RB_IS_BLACK(w->rb_left)) && (!w->rb_right || RB_IS_BLACK(w->rb_right))) { if (w) RB_SET_RED(w); x = x_parent; x_parent = x_parent->rb_parent; }
                 else {
-                    if (!w->rb_left || w->rb_left->rb_color == 1) {
-                        if (w->rb_right) w->rb_right->rb_color = 1;
-                        w->rb_color = 0;
+                    if (!w->rb_left || RB_IS_BLACK(w->rb_left)) {
+                        if (w->rb_right) RB_SET_BLACK(w->rb_right);
+                        RB_SET_RED(w);
                         rb_left_rotate(pool, w);
                         w = x_parent->rb_left;
                     }
-                    if (w) {
-                        w->rb_color = x_parent->rb_color;
-                    }
-                    x_parent->rb_color = 1;
-                    if (w && w->rb_left) w->rb_left->rb_color = 1;
+                    if (w) { if (RB_IS_RED(x_parent)) RB_SET_RED(w); else RB_SET_BLACK(w); }
+                    RB_SET_BLACK(x_parent);
+                    if (w && w->rb_left) RB_SET_BLACK(w->rb_left);
                     rb_right_rotate(pool, x_parent);
                     x = pool->rb_root;
                     break; }
             } else break;
         }
-        if (x) x->rb_color = 1;
+        if (x) RB_SET_BLACK(x);
     }
 }
 static memory_block_t* rb_find_best_fit(memory_pool_t* root, size_t size, memory_pool_t** owner_pool) {
@@ -206,7 +203,10 @@ static inline bool is_power_of_two(size_t n) {
 
 // 验证内存块
 static bool validate_block(memory_block_t* block) {
-    bool ok = block && block->magic == MAGIC_NUMBER && block->size >= sizeof(memory_block_t);
+    if (!block) return false;
+    // 通过 block 所在池推断：向上扫描链（需要额外参数理想，这里在调用方已保证 block 来源于池范围）
+    // 只能做基本静态检查；动态魔数校验在调用点结合所属 pool 进行。
+    bool ok = block->size >= sizeof(memory_block_t); // 魔数在独立逻辑里校验
     if (!ok) {
         MP_LOG("invalid block blk=%p size=%zu magic=%08x", (void*)block, block ? (size_t)block->size : 0, block ? block->magic : 0);
     }
@@ -230,7 +230,7 @@ static inline void set_next_prev_free(memory_pool_t* pool, memory_block_t* free_
     // 只有在后继块不是空闲列表中的 size-class 专属块时才安全；暂未区分，保持通用逻辑
     nxt->flags |= MB_FLAG_PREV_FREE;
     // prev_size 仅在后继块“当前不在通用 free_list”或者需要反向合并时使用
-    nxt->u.prev_size = (uint32_t)free_blk->size; // 若 >4G 会截断（当前设计限制）
+    nxt->u.prev_size = free_blk->size; // size_t 记录完整大小
 }
 
 static inline void clear_next_prev_free(memory_pool_t* pool, memory_block_t* blk) {
@@ -311,6 +311,19 @@ memory_pool_t* memory_pool_create_with_config(const pool_config_t* config) {
     pool->num_classes = 0;
     pool->next = NULL;
     pool->master = pool; // self master
+    // 初始化随机种子（优先使用 /dev/urandom，退化到时间+地址）
+    {
+        uint32_t seed = 0;
+        FILE* rf = fopen("/dev/urandom", "rb");
+        if (rf) {
+            if (fread(&seed, 1, sizeof(seed), rf) != sizeof(seed)) seed = 0;
+            fclose(rf);
+        }
+        if (seed == 0) {
+            seed = (uint32_t)time(NULL) ^ (uint32_t)(uintptr_t)pool ^ (uint32_t)getpid();
+        }
+        pool->magic_seed = seed ? seed : 0xA5A5A5A5u;
+    }
 
     // 初始化互斥锁
     if (pool->thread_safe) {
@@ -326,9 +339,9 @@ memory_pool_t* memory_pool_create_with_config(const pool_config_t* config) {
     memory_block_t* initial_block = (memory_block_t*)pool->pool_start;
     initial_block->u.next = NULL;
     initial_block->size = pool->pool_size;
-    initial_block->magic = MAGIC_NUMBER;
+    initial_block->magic = MP_MAKE_BLOCK_MAGIC(pool, initial_block);
     initial_block->flags = MB_FLAG_FREE;
-    initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; initial_block->rb_color = 1; // root black
+    initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; RB_SET_BLACK(initial_block); // root black
     pool->free_list = initial_block;
     pool->rb_root = initial_block; // only master uses
     MP_LOG("create pool %p size=%zu align=%u", (void*)pool, pool->pool_size, pool->alignment);
@@ -374,7 +387,7 @@ static memory_pool_t* create_child_pool(memory_pool_t* root, size_t min_size) {
     memory_block_t* initial_block = (memory_block_t*)child->pool_start;
     // 清理其 rb 链接后插入 master
     initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL;
-    initial_block->rb_color = 0; // will be recolored in insert
+    RB_SET_RED(initial_block); // will be recolored in insert
     child->rb_root = NULL;
     rb_insert(master, initial_block);
     // 挂到链尾
@@ -470,7 +483,7 @@ void* memory_pool_alloc(memory_pool_t* pool, size_t size) {
     if (remaining_size >= MIN_BLOCK_SIZE) {
         memory_block_t* new_block = (memory_block_t*)((char*)block + aligned_size);
     new_block->size = remaining_size;
-    new_block->magic = MAGIC_NUMBER;
+    new_block->magic = MP_MAKE_BLOCK_MAGIC(owner, new_block);
     new_block->flags = 0; // will be set FREE by insert_free_block
     new_block->u.next = NULL;
         block->size = aligned_size;
@@ -566,7 +579,7 @@ void* memory_pool_alloc_aligned(memory_pool_t* pool, size_t size, size_t alignme
     if (prefix >= MIN_BLOCK_SIZE) {
         memory_block_t* pre = (memory_block_t*)raw;
         pre->size = prefix;
-        pre->magic = MAGIC_NUMBER;
+    pre->magic = MP_MAKE_BLOCK_MAGIC(owner, pre);
         pre->flags = MB_FLAG_FREE;
         pre->u.next = NULL;
         insert_free_block(owner, pre);
@@ -576,11 +589,11 @@ void* memory_pool_alloc_aligned(memory_pool_t* pool, size_t size, size_t alignme
 
     // 设置对齐后的使用块头
     aligned_block->size = used_total;
-    aligned_block->magic = MAGIC_NUMBER;
+    aligned_block->magic = MP_MAKE_BLOCK_MAGIC(owner, aligned_block);
     aligned_block->flags &= ~MB_FLAG_FREE; // allocated
     if (prefix >= MIN_BLOCK_SIZE) {
         aligned_block->flags |= MB_FLAG_PREV_FREE;
-        aligned_block->u.prev_size = (uint32_t)((memory_block_t*)raw)->size;
+    aligned_block->u.prev_size = ((memory_block_t*)raw)->size;
     } else {
         aligned_block->flags &= ~MB_FLAG_PREV_FREE;
     }
@@ -590,7 +603,7 @@ void* memory_pool_alloc_aligned(memory_pool_t* pool, size_t size, size_t alignme
     if (suffix >= MIN_BLOCK_SIZE) {
         memory_block_t* suf = (memory_block_t*)((char*)aligned_block + used_total);
         suf->size = suffix;
-        suf->magic = MAGIC_NUMBER;
+    suf->magic = MP_MAKE_BLOCK_MAGIC(owner, suf);
         suf->flags = MB_FLAG_FREE;
         suf->u.next = NULL;
         insert_free_block(owner, suf);
@@ -675,7 +688,7 @@ void memory_pool_free(memory_pool_t* pool, void* ptr) {
     memory_block_t* block = (memory_block_t*)((char*)ptr - sizeof(memory_block_t));
 
     // 验证块的完整性
-    if (!validate_block(block)) {
+    if (!validate_block(block) || !MP_CHECK_BLOCK_MAGIC(owner, block)) {
         set_error(POOL_ERROR_CORRUPTION);
         return;
     }
@@ -800,17 +813,17 @@ void memory_pool_reset(memory_pool_t* pool) {
         memory_block_t* initial_block = (memory_block_t*)p->pool_start;
         initial_block->u.next = NULL;
         initial_block->size = p->pool_size;
-        initial_block->magic = MAGIC_NUMBER;
+    initial_block->magic = MP_MAKE_BLOCK_MAGIC(p, initial_block);
         initial_block->flags = MB_FLAG_FREE;
         p->free_list = initial_block;
         if (p == pool->master) {
             // 重建 master 根（先清空 rb_root）
             p->rb_root = NULL;
-            initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; initial_block->rb_color = 0;
+            initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; RB_SET_RED(initial_block);
             rb_insert(p, initial_block); // becomes root
         } else {
             // 将子池初始块插入 master 的树
-            initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; initial_block->rb_color = 0;
+            initial_block->rb_left = initial_block->rb_right = initial_block->rb_parent = NULL; RB_SET_RED(initial_block);
             rb_insert(pool->master, initial_block);
         }
         MP_LOG("reset pool=%p size=%zu", (void*)p, p->pool_size);
@@ -857,9 +870,20 @@ void memory_pool_warmup(memory_pool_t* pool) {
     if (!pool) return;
     memory_pool_t* p = pool;
     while (p) {
-        volatile char* ptr = (char*)p->pool_start;
-        for (size_t i = 0; i < p->pool_size; i += PAGE_SIZE) {
-            ptr[i] = 0;
+        // 之前版本在每个页面的起始地址写入 0，用于预触发物理页分配。
+        // 但第一个页面的起始地址正是第一个空闲大块的块头（magic 位于偏移0），
+        // 会把动态魔数首字节清零导致 memory_pool_validate 失败。
+        // 修复：逐页触摸时，第一页避开块头（跳到 sizeof(memory_block_t) 偏移），
+        // 其余页仍写入页首；这样仍然保证每页至少被一次写访问而不破坏头部。
+        volatile char* base = (char*)p->pool_start;
+        for (size_t page_off = 0; page_off < p->pool_size; page_off += PAGE_SIZE) {
+            size_t touch_off = page_off;
+            if (page_off == 0) {
+                size_t skip = sizeof(memory_block_t);
+                if (skip >= p->pool_size) break; // 极小池保护
+                touch_off = skip; // 跳过首块头部
+            }
+            base[touch_off] = 0;
         }
         p = p->next;
     }
@@ -918,7 +942,8 @@ bool memory_pool_validate(memory_pool_t* pool) {
         size_t total_free = 0;
         memory_block_t* current = p->free_list;
         while (current) {
-            if (!validate_block(current)) { valid = false; break; }
+            // 需推断所属 pool 获取种子： current 一定位于 p 内
+            if (!validate_block(current) || !MP_CHECK_BLOCK_MAGIC(p, current)) { valid = false; break; }
             total_free += current->size;
             current = current->u.next;
         }
@@ -1114,7 +1139,7 @@ void memory_pool_free_fixed(memory_pool_t* pool, void* ptr) {
 
     memory_block_t* block = (memory_block_t*)((char*)ptr - sizeof(memory_block_t));
     
-    if (!validate_block(block)) {
+    if (!validate_block(block) || !MP_CHECK_BLOCK_MAGIC(pool, block)) {
         set_error(POOL_ERROR_CORRUPTION);
         return;
     }
