@@ -75,4 +75,79 @@ memory_pool_t* pool = memory_pool_create_with_config(&config);
 
 ```c
 // Basic allocation
-void
+void* ptr = memory_pool_alloc(pool, size);
+
+// Aligned allocation (alignment must be a power of 2)
+void* aligned_ptr = memory_pool_alloc_aligned(pool, size, alignment);
+
+// Zero-initialized allocation
+void* zero_ptr = memory_pool_calloc(pool, count, size);
+
+// Reallocation
+void* new_ptr = memory_pool_realloc(pool, old_ptr, new_size);
+
+// Fixed-size fast allocation
+void* fixed_ptr = memory_pool_alloc_fixed(pool, size);
+```
+
+### Memory Freeing
+
+```c
+// Normal free
+memory_pool_free(pool, ptr);
+
+// Fixed-size free
+memory_pool_free_fixed(pool, ptr);
+
+// Reset entire pool
+memory_pool_reset(pool);
+```
+
+### Performance Optimization
+
+```c
+// Memory warmup (reduce page faults)
+memory_pool_warmup(pool);
+
+// Defragmentation
+memory_pool_defragment(pool);
+
+// Add fixed-size class
+int class_id = memory_pool_add_size_class(pool, 1024, 1000);
+```
+
+### Debugging and Validation
+
+```c
+// Validate memory pool integrity
+bool is_valid = memory_pool_validate(pool);
+
+// Check if pointer belongs to the pool
+bool contains = memory_pool_contains(pool, ptr);
+```
+
+#### Enabling DEBUG Macro
+
+- Specify `MEMPOOL_DEBUG=1` during build to enable debug logs and assertions, for example:
+- - `make clean && make test DEBUG=1`
+- - or `make DEBUG=1`
+- Related macros in `memory_pool.h`:
+- - `MP_LOG(fmt, ...)` conditional logging
+- - `MP_ASSERT(cond, msg)` conditional assertion
+- When DEBUG is disabled, these macros are removed during preprocessing, generating no runtime overhead (empty do { } while (0) expansion).
+
+#### API Notes
+
+- `alignment` must be a power of 2, otherwise returns `POOL_ERROR_INVALID_SIZE`.
+- `memory_pool_alloc(pool, 0)` will fail and set `POOL_ERROR_INVALID_SIZE`.
+- Error information can be obtained via `memory_pool_get_last_error()` and `memory_pool_error_string()`.
+
+## Build Targets
+
+- `make`: Builds static library `lib/libmempool.a` and dynamic library `lib/libmempool.so`
+- `make test`: Compiles and runs `examples/examples.c`
+- `make clean`: Cleans `build/` and `lib/`
+
+This project uses the MIT License.
+
+---
